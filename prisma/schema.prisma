@@ -1,0 +1,185 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum StrategyType {
+  PRESET
+  CUSTOM
+}
+
+enum StrategyStatus {
+  DRAFT
+  COMPILING
+  ACTIVE
+  INVALID
+}
+
+enum MatchStatus {
+  IDLE
+  QUEUED
+  MATCHED
+  TURN_ACTIVE
+  TURN_LOCKED
+  TURN_REVEALED
+  ROUND_RESOLVED
+  MATCH_COMPLETE
+}
+
+enum TurnMove {
+  ROCK
+  PAPER
+  SCISSORS
+  FALLBACK_RANDOM
+}
+
+enum QueueEntryStatus {
+  WAITING
+  MATCHED
+  EXPIRED
+  CANCELLED
+}
+
+model User {
+  id             String        @id @default(uuid()) @db.Uuid
+  walletAddress  String?       @unique @map("wallet_address")
+  displayName    String?       @map("display_name") @db.VarChar(32)
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+  isActive       Boolean       @default(true) @map("is_active")
+  strategies     Strategy[]
+  matchesAsP1    Match[]       @relation("MatchPlayer1")
+  matchesAsP2    Match[]       @relation("MatchPlayer2")
+  wins           Match[]       @relation("MatchWinner")
+  turns          Turn[]
+  queueEntry     QueueEntry?
+  compileLogs    CompileLog[]
+
+  @@map("users")
+}
+
+model Strategy {
+  id               String          @id @default(uuid()) @db.Uuid
+  userId           String          @map("user_id") @db.Uuid
+  name             String          @db.VarChar(64)
+  type             StrategyType
+  presetKey        String?         @map("preset_key")
+  prompt           String?         @db.VarChar(500)
+  compiledJs       String?         @map("compiled_js")
+  promptHash       String?         @map("prompt_hash")
+  strategyVersion  Int             @default(1) @map("strategy_version")
+  status           StrategyStatus  @default(DRAFT)
+  compileModel     String?         @map("compile_model")
+  compileError     String?         @map("compile_error")
+  isActive         Boolean         @default(false) @map("is_active")
+  smokeTestPassed  Boolean         @default(false) @map("smoke_test_passed")
+  createdAt        DateTime        @default(now()) @map("created_at")
+  updatedAt        DateTime        @updatedAt @map("updated_at")
+  user             User            @relation(fields: [userId], references: [id])
+  matchesAsP1      Match[]         @relation("MatchPlayer1Strategy")
+  matchesAsP2      Match[]         @relation("MatchPlayer2Strategy")
+  turns            Turn[]
+  queueEntries     QueueEntry[]
+  compileLogs      CompileLog[]
+
+  @@index([userId])
+  @@index([userId, isActive])
+  @@index([userId, status])
+  @@map("strategies")
+}
+
+model Match {
+  id                     String       @id @default(uuid()) @db.Uuid
+  player1Id              String       @map("player1_id") @db.Uuid
+  player2Id              String       @map("player2_id") @db.Uuid
+  winnerId               String?      @map("winner_id") @db.Uuid
+  player1Score           Int          @default(0) @map("player1_score")
+  player2Score           Int          @default(0) @map("player2_score")
+  totalRounds            Int          @default(0) @map("total_rounds")
+  status                 MatchStatus
+  currentRound           Int          @default(0) @map("current_round")
+  player1StrategyId      String?      @map("player1_strategy_id") @db.Uuid
+  player1StrategyVersion Int?         @map("player1_strategy_version")
+  player2StrategyId      String?      @map("player2_strategy_id") @db.Uuid
+  player2StrategyVersion Int?         @map("player2_strategy_version")
+  startedAt              DateTime?    @map("started_at")
+  endedAt                DateTime?    @map("ended_at")
+  createdAt              DateTime     @default(now()) @map("created_at")
+  updatedAt              DateTime     @updatedAt @map("updated_at")
+  player1                User         @relation("MatchPlayer1", fields: [player1Id], references: [id])
+  player2                User         @relation("MatchPlayer2", fields: [player2Id], references: [id])
+  winner                 User?        @relation("MatchWinner", fields: [winnerId], references: [id])
+  player1Strategy        Strategy?    @relation("MatchPlayer1Strategy", fields: [player1StrategyId], references: [id])
+  player2Strategy        Strategy?    @relation("MatchPlayer2Strategy", fields: [player2StrategyId], references: [id])
+  turns                  Turn[]
+
+  @@index([player1Id])
+  @@index([player2Id])
+  @@index([status, createdAt])
+  @@index([winnerId])
+  @@map("matches")
+}
+
+model Turn {
+  id                String    @id @default(uuid()) @db.Uuid
+  matchId           String    @map("match_id") @db.Uuid
+  roundNumber       Int       @map("round_number")
+  playerId          String    @map("player_id") @db.Uuid
+  strategyId        String?   @map("strategy_id") @db.Uuid
+  strategyVersion   Int?      @map("strategy_version")
+  inputSnapshotHash String?   @map("input_snapshot_hash")
+  rawOutput         String?   @map("raw_output")
+  move              TurnMove
+  fallbackReason    String?   @map("fallback_reason")
+  executionTimeMs   Int?      @map("execution_time_ms")
+  turnStartedAt     DateTime  @map("turn_started_at")
+  turnLockedAt      DateTime? @map("turn_locked_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  match             Match     @relation(fields: [matchId], references: [id])
+  player            User      @relation(fields: [playerId], references: [id])
+  strategy          Strategy? @relation(fields: [strategyId], references: [id])
+
+  @@index([matchId, roundNumber])
+  @@index([playerId])
+  @@index([matchId, playerId])
+  @@unique([matchId, roundNumber, playerId])
+  @@map("turns")
+}
+
+model QueueEntry {
+  id         String           @id @default(uuid()) @db.Uuid
+  userId     String           @unique @map("user_id") @db.Uuid
+  strategyId String?          @map("strategy_id") @db.Uuid
+  status     QueueEntryStatus
+  position   Int
+  expiresAt  DateTime         @map("expires_at")
+  matchedAt  DateTime?        @map("matched_at")
+  createdAt  DateTime         @default(now()) @map("created_at")
+  user       User             @relation(fields: [userId], references: [id])
+  strategy   Strategy?        @relation(fields: [strategyId], references: [id])
+
+  @@index([status, expiresAt])
+  @@map("queue_entries")
+}
+
+model CompileLog {
+  id           String    @id @default(uuid()) @db.Uuid
+  strategyId   String    @map("strategy_id") @db.Uuid
+  userId       String    @map("user_id") @db.Uuid
+  attempt      Int
+  promptHash   String    @map("prompt_hash")
+  model        String
+  rawOutput    String?   @map("raw_output")
+  compileError String?   @map("compile_error")
+  success      Boolean
+  durationMs   Int?      @map("duration_ms")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  strategy     Strategy  @relation(fields: [strategyId], references: [id])
+  user         User      @relation(fields: [userId], references: [id])
+
+  @@map("compile_logs")
+}
