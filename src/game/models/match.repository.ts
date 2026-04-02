@@ -149,8 +149,7 @@ export class MatchRepository {
       players: [
         {
           id: match.player1Id,
-          displayName: player1?.displayName ?? player1?.walletAddress ?? match.player1Id,
-          walletAddress: player1?.walletAddress ?? null,
+          displayName: player1?.displayName ?? match.player1Id,
           strategyId: match.player1StrategyId,
           strategyVersion: match.player1StrategyVersion || 1,
           strategyName: player1Strategy?.name ?? null,
@@ -158,8 +157,7 @@ export class MatchRepository {
         },
         {
           id: match.player2Id,
-          displayName: player2?.displayName ?? player2?.walletAddress ?? match.player2Id,
-          walletAddress: player2?.walletAddress ?? null,
+          displayName: player2?.displayName ?? match.player2Id,
           strategyId: match.player2StrategyId,
           strategyVersion: match.player2StrategyVersion || 1,
           strategyName: player2Strategy?.name ?? null,
@@ -256,7 +254,6 @@ export class MatchRepository {
 
     return rows.map((row) => ({
       userId: row.winnerId,
-      walletAddress: userMap.get(row.winnerId || '')?.walletAddress || null,
       displayName: userMap.get(row.winnerId || '')?.displayName || null,
       wins: row._count.winnerId,
     }));

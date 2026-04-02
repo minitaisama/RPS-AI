@@ -1,9 +1,9 @@
 import { Controller, Get, Param, ParseIntPipe, Query, Req, UseGuards } from '@nestjs/common';
 import { GameService } from '../game/game.service';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { DeviceAuthGuard } from '../auth/guards/device-auth.guard';
 
 @Controller()
-@UseGuards(JwtAuthGuard)
+@UseGuards(DeviceAuthGuard)
 export class MatchController {
   constructor(private readonly gameService: GameService) {}
 

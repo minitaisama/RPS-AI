@@ -13,8 +13,8 @@ import { SOCKET_EVENTS, MATCH_DEFAULTS } from '../../common/constants/game.const
 import { QueueService } from '../../queue/queue.service';
 import { QueuePlayerDto } from '../dto/queue-player.dto';
 import { GameService } from '../game.service';
-import { JwtService } from '@nestjs/jwt';
 import { ApiException } from '../../common/http/api-exception';
+import { AuthService } from '../../auth/auth.service';
 
 function parseAllowedOrigins() {
   const raw = process.env.ALLOWED_ORIGINS || '';
@@ -40,7 +40,7 @@ export class GameGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
   constructor(
     private readonly queueService: QueueService,
     private readonly gameService: GameService,
-    private readonly jwtService: JwtService,
+    private readonly authService: AuthService,
   ) {}
 
   afterInit() {
@@ -49,18 +49,13 @@ export class GameGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
   async handleConnection(client: Socket) {
     try {
-      const token = this.extractToken(client);
-      const secret = process.env.JWT_SECRET;
-      if (!secret) {
-        throw new Error('JWT_SECRET is required');
-      }
-      const payload = this.jwtService.verify(token, {
-        secret,
-      }) as { sub: string };
-      client.data.userId = payload.sub;
-      await this.queueService.incrementCCU(payload.sub, client.id);
+      const { deviceId, username } = this.extractIdentity(client);
+      const identity = await this.authService.resolveIdentity(deviceId, username);
+      client.data.userId = identity.sub;
+      client.data.username = identity.username;
+      await this.queueService.incrementCCU(identity.sub, client.id);
       await this.restoreClientState(client);
-      await this.emitQueuePosition(payload.sub);
+      await this.emitQueuePosition(identity.sub);
     } catch {
       client.emit(SOCKET_EVENTS.ERROR, { code: 'UNAUTHORIZED', message: 'Invalid socket auth' });
       client.disconnect();
@@ -121,7 +116,7 @@ export class GameGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
   @SubscribeMessage(SOCKET_EVENTS.FIND_MATCH)
   async handleQueueJoin(@ConnectedSocket() client: Socket, @MessageBody() payload: Partial<QueuePlayerDto>) {
-    const playerId = client.data.userId as string;
+    const playerId = await this.resolveClientUserId(client, payload);
 
     try {
       const queued = await this.queueService.enqueue({
@@ -165,12 +160,10 @@ export class GameGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         player1: {
           id: match.players[0].id,
           displayName: match.players[0].displayName,
-          walletAddress: match.players[0].walletAddress,
         },
         player2: {
           id: match.players[1].id,
           displayName: match.players[1].displayName,
-          walletAddress: match.players[1].walletAddress,
         },
         rounds: 5,
       });
@@ -178,6 +171,7 @@ export class GameGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       void this.runMatchLoop(roomId, match.matchId);
       return queued;
     } catch (error) {
+      console.error('[GameGateway.handleQueueJoin] queue.join failed', error);
       this.emitApiError(client, error);
       throw error;
     }
@@ -231,6 +225,7 @@ export class GameGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       await this.delay(MATCH_DEFAULTS.TURN_MS - MATCH_DEFAULTS.LOCK_BUFFER_MS);
 
       this.server.to(roomId).emit(SOCKET_EVENTS.TURN_LOCKED, {});
+      await this.delay(500);
 
       const revealed = await this.gameService.revealRound(matchId, round);
       const [left] = round.decisions;
@@ -250,7 +245,7 @@ export class GameGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         },
       });
 
-      await this.delay(MATCH_DEFAULTS.LOCK_BUFFER_MS);
+      await this.delay(2500);
 
       if (revealed.status === 'match_complete') {
         await this.emitMatchResult(matchId, revealed);
@@ -314,7 +309,6 @@ export class GameGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       opponent: {
         id: opponent.id,
         displayName: opponent.displayName,
-        walletAddress: opponent.walletAddress,
         strategy: {
           name: opponent.strategyName,
           preset: opponent.strategyPreset,
@@ -326,7 +320,30 @@ export class GameGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
   private async emitMatchResult(matchId: string, revealed: any) {
     const roomId = `match:${matchId}`;
     this.server.to(roomId).emit(SOCKET_EVENTS.MATCH_RESULT, {
+      matchId,
       status: 'match_complete',
+      player1: {
+        id: revealed.players[0]?.id,
+        displayName: revealed.players[0]?.displayName,
+        strategyName: revealed.players[0]?.strategyName,
+        strategyLabel: revealed.players[0]?.strategyName || revealed.players[0]?.strategyPreset,
+        strategy: {
+          name: revealed.players[0]?.strategyName,
+          preset: revealed.players[0]?.strategyPreset,
+        },
+      },
+      player2: {
+        id: revealed.players[1]?.id,
+        displayName: revealed.players[1]?.displayName,
+        strategyName: revealed.players[1]?.strategyName,
+        strategyLabel: revealed.players[1]?.strategyName || revealed.players[1]?.strategyPreset,
+        strategy: {
+          name: revealed.players[1]?.strategyName,
+          preset: revealed.players[1]?.strategyPreset,
+        },
+      },
+      currentRound: revealed.currentRound,
+      totalRounds: revealed.bestOf,
       winner:
         revealed.winnerId === null
           ? 'draw'
@@ -351,13 +368,51 @@ export class GameGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     });
   }
 
-  private extractToken(client: Socket) {
-    const authToken = client.handshake.auth?.token as string | undefined;
-    if (authToken) {
-      return authToken;
+  private extractIdentity(client: Socket) {
+    const auth = client.handshake.auth as Record<string, unknown> | undefined;
+    const headers = client.handshake.headers as Record<string, string | string[] | undefined>;
+    const query = client.handshake.query as Record<string, string | string[] | undefined>;
+
+    const fromAuthDeviceId = typeof auth?.deviceId === 'string' ? auth.deviceId : '';
+    const fromAuthUsername = typeof auth?.username === 'string' ? auth.username : '';
+    const fromHeaderDeviceId = this.getHandshakeValue(headers['x-device-id']);
+    const fromHeaderUsername = this.getHandshakeValue(headers['x-username']);
+    const fromQueryDeviceId = this.getHandshakeValue(query.deviceId);
+    const fromQueryUsername = this.getHandshakeValue(query.username);
+
+    const deviceId = fromAuthDeviceId || fromHeaderDeviceId || fromQueryDeviceId;
+    const username = fromAuthUsername || fromHeaderUsername || fromQueryUsername;
+
+    if (!deviceId || !username) {
+      throw new Error('Missing device auth');
+    }
+    return { deviceId, username };
+  }
+
+  private getHandshakeValue(value: string | string[] | undefined) {
+    if (Array.isArray(value)) {
+      return typeof value[0] === 'string' ? value[0] : '';
+    }
+    return typeof value === 'string' ? value : '';
+  }
+
+  private async resolveClientUserId(client: Socket, payload?: Partial<QueuePlayerDto>) {
+    const existingUserId = client.data.userId as string | undefined;
+    if (existingUserId) {
+      return existingUserId;
     }
 
-    throw new Error('Missing token');
+    const payloadPlayerId = typeof payload?.playerId === 'string' ? payload.playerId : undefined;
+    if (payloadPlayerId) {
+      client.data.userId = payloadPlayerId;
+      return payloadPlayerId;
+    }
+
+    const { deviceId, username } = this.extractIdentity(client);
+    const identity = await this.authService.resolveIdentity(deviceId, username);
+    client.data.userId = identity.sub;
+    client.data.username = identity.username;
+    return identity.sub;
   }
 
   private async resolvePairSockets(playerIds: string[]) {

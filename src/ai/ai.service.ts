@@ -1,6 +1,7 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { fork, ChildProcess } from 'node:child_process';
-import path from 'node:path';
+import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
 import { randomUUID, createHash } from 'node:crypto';
 
 export type AiWorkerInput = {
@@ -134,7 +135,22 @@ export class AiService implements OnModuleDestroy {
       return;
     }
 
-    const workerPath = path.join(__dirname, 'ai-worker.js');
+    const cwd = process.cwd();
+    const candidatePaths = [resolve(cwd, 'dist/src/ai/ai-worker.js'), resolve(cwd, 'dist/ai/ai-worker.js')];
+    const workerPath = candidatePaths.find((candidate) => {
+      try {
+        return existsSync(candidate);
+      } catch {
+        return false;
+      }
+    });
+
+    if (!workerPath) {
+      console.error(`[AiService] AI_WORKER_NOT_FOUND: cwd=${cwd}, candidates=${candidatePaths.join(', ')}`);
+      throw new Error(`AI_WORKER_NOT_FOUND: cwd=${cwd}, candidates=${candidatePaths.join(', ')}`);
+    }
+
+    console.log(`[AiService] Spawning AI worker from: ${workerPath}`);
     this.worker = fork(workerPath, [], {
       stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
     });
