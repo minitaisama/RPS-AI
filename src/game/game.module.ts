@@ -8,8 +8,10 @@ import { QueueModule } from '../queue/queue.module';
 import { AuditModule } from '../audit/audit.module';
 import { AuthModule } from '../auth/auth.module';
 
+import { WalletModule } from '../wallet/wallet.module';
+
 @Module({
-  imports: [StrategyModule, QueueModule, AuditModule, AuthModule],
+  imports: [StrategyModule, QueueModule, AuditModule, AuthModule, WalletModule],
   providers: [GameGateway, GameService, MatchRepository, MatchStateMachineService],
   exports: [GameService],
 })
