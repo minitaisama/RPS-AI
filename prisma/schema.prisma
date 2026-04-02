@@ -58,6 +58,8 @@ model User {
   turns          Turn[]
   queueEntry     QueueEntry?
   compileLogs    CompileLog[]
+  walletBalance  WalletBalance?
+  transactions   WalletTransaction[]
 
   @@map("users")
 }
@@ -182,4 +184,42 @@ model CompileLog {
   user         User      @relation(fields: [userId], references: [id])
 
   @@map("compile_logs")
+}
+
+model WalletBalance {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @unique @map("user_id") @db.Uuid
+  balance   Float    @default(0)
+  locked    Float    @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@map("wallet_balances")
+}
+
+model WalletTransaction {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  amount    Float
+  type      String   @db.VarChar(32)
+  status    String   @default("COMPLETED") @db.VarChar(32)
+  reference String?  @db.VarChar(255)
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("wallet_transactions")
+}
+
+model SystemAuditLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  type      String   @db.VarChar(64)
+  matchId   String?  @map("match_id") @db.Uuid
+  details   Json
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([type])
+  @@index([matchId])
+  @@map("system_audit_logs")
 }
