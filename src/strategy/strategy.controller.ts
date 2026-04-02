@@ -1,11 +1,11 @@
 import { Body, Controller, Delete, Get, Param, Post, Put, Req, UseGuards } from '@nestjs/common';
 import { StrategyService } from './strategy.service';
 import { UpsertStrategyDto } from './dto/upsert-strategy.dto';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { DeviceAuthGuard } from '../auth/guards/device-auth.guard';
 import { CompileStrategyDto } from './dto/compile-strategy.dto';
 
 @Controller('strategies')
-@UseGuards(JwtAuthGuard)
+@UseGuards(DeviceAuthGuard)
 export class StrategyController {
   constructor(private readonly strategyService: StrategyService) {}
 

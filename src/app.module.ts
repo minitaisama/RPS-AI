@@ -5,7 +5,6 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { GameModule } from './game/game.module';
 import { StrategyModule } from './strategy/strategy.module';
 import { QueueModule } from './queue/queue.module';
-import { WalletModule } from './wallet/wallet.module';
 import { AuditModule } from './audit/audit.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { RedisModule } from './redis/redis.module';
@@ -24,7 +23,6 @@ import { AiModule } from './ai/ai.module';
     AuthModule,
     StrategyModule,
     QueueModule,
-    WalletModule,
     GameModule,
     MatchModule,
     HealthModule,

@@ -21,7 +21,6 @@ export interface StrategyRef {
 export interface PlayerRef {
   id: string;
   displayName?: string | null;
-  walletAddress?: string | null;
   strategyId?: string | null;
   strategyVersion: number;
   strategyName?: string | null;

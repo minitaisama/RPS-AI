@@ -335,8 +335,17 @@ export class StrategyService {
       ? await this.prisma.strategy.findFirst({ where: { id: strategyId, userId } })
       : await this.getActiveStrategyForUser(userId);
 
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+
     if (!strategy) {
-      throw new ApiException(400, 'NO_ACTIVE_STRATEGY', 'No active strategy');
+      return {
+        id: userId,
+        displayName: user?.displayName ?? userId,
+        strategyId: null,
+        strategyVersion: 0,
+        strategyName: null,
+        strategyPreset: null,
+      } as PlayerRef;
     }
     if (strategy.status === StrategyStatus.COMPILING) {
       throw new ApiException(409, 'STRATEGY_COMPILING', 'Strategy is compiling');
@@ -345,13 +354,11 @@ export class StrategyService {
       throw new ApiException(400, 'STRATEGY_INVALID', 'Strategy is invalid');
     }
 
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
     await this.cacheStrategy(strategy.userId, strategy.strategyVersion, strategy.compiledJs || '');
 
     return {
       id: userId,
-      displayName: user?.displayName ?? user?.walletAddress ?? userId,
-      walletAddress: user?.walletAddress ?? null,
+      displayName: user?.displayName ?? userId,
       strategyId: strategy.id,
       strategyVersion: strategy.strategyVersion,
       strategyName: strategy.name,

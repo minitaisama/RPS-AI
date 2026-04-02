@@ -6,6 +6,8 @@ import { MATCH_DEFAULTS } from '../common/constants/game.constants';
 import { QueueEntryStatus, StrategyStatus, MatchStatus } from '@prisma/client';
 import { ApiException } from '../common/http/api-exception';
 
+const UUID_V4_LIKE_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 @Injectable()
 export class QueueService {
   constructor(
@@ -18,6 +20,10 @@ export class QueueService {
   }
 
   async enqueue(player: QueuePlayerDto) {
+    if (!this.isValidUserId(player.playerId)) {
+      throw new ApiException(HttpStatus.BAD_REQUEST, 'INVALID_PLAYER_ID', 'Invalid player id');
+    }
+
     const alreadyQueued = await this.redis.zscore('rps:queue', player.playerId);
     if (alreadyQueued !== null) {
       throw new ApiException(HttpStatus.CONFLICT, 'ALREADY_IN_QUEUE', 'User already in queue');
@@ -57,13 +63,10 @@ export class QueueService {
           orderBy: { updatedAt: 'desc' },
         });
 
-    if (!activeStrategy) {
-      throw new ApiException(HttpStatus.BAD_REQUEST, 'NO_ACTIVE_STRATEGY', 'No active strategy');
-    }
-    if (activeStrategy.status === StrategyStatus.COMPILING) {
+    if (activeStrategy?.status === StrategyStatus.COMPILING) {
       throw new ApiException(HttpStatus.CONFLICT, 'STRATEGY_COMPILING', 'Strategy is compiling');
     }
-    if (activeStrategy.status !== StrategyStatus.ACTIVE || !activeStrategy.compiledJs) {
+    if (activeStrategy && (activeStrategy.status !== StrategyStatus.ACTIVE || !activeStrategy.compiledJs)) {
       throw new ApiException(HttpStatus.BAD_REQUEST, 'STRATEGY_INVALID', 'Strategy is invalid');
     }
 
@@ -77,7 +80,7 @@ export class QueueService {
     const expiresAt = new Date(now + MATCH_DEFAULTS.QUEUE_EXPIRY_SECONDS * 1000);
     await this.redis.zadd('rps:queue', now, player.playerId);
     await this.redis.hset(`rps:queue:entry:${player.playerId}`, {
-      strategyId: activeStrategy.id,
+      strategyId: activeStrategy?.id ?? '',
       status: QueueEntryStatus.WAITING,
       enqueuedAt: String(now),
       expiresAt: expiresAt.toISOString(),
@@ -89,14 +92,14 @@ export class QueueService {
     await this.prisma.queueEntry.upsert({
       where: { userId: player.playerId },
       update: {
-        strategyId: activeStrategy.id,
+        strategyId: activeStrategy?.id ?? null,
         status: QueueEntryStatus.WAITING,
         position: (position ?? 0) + 1,
         expiresAt,
       },
       create: {
         userId: player.playerId,
-        strategyId: activeStrategy.id,
+        strategyId: activeStrategy?.id ?? null,
         status: QueueEntryStatus.WAITING,
         position: (position ?? 0) + 1,
         expiresAt,
@@ -109,11 +112,15 @@ export class QueueService {
       position: (position ?? 0) + 1,
       estimatedWait: 5,
       queued: true,
-      strategyId: activeStrategy.id,
+      strategyId: activeStrategy?.id ?? null,
     };
   }
 
   async cancel(userId: string) {
+    if (!this.isValidUserId(userId)) {
+      return { success: true };
+    }
+
     await this.redis.zrem('rps:queue', userId);
     await this.redis.del(`rps:queue:entry:${userId}`);
     await this.redis.set(`rps:user:state:${userId}`, 'idle');
@@ -127,7 +134,7 @@ export class QueueService {
 
   async tryMatch(): Promise<[QueuePlayerDto, QueuePlayerDto] | null> {
     await this.expireEntries();
-    const players = await this.redis.zrange('rps:queue', 0, 1);
+    const players = await this.getValidQueuedUserIds(0, 1);
     if (players.length < 2) {
       return null;
     }
@@ -158,7 +165,7 @@ export class QueueService {
   }
 
   async getQueuePositions() {
-    const ids = await this.redis.zrange('rps:queue', 0, -1);
+    const ids = await this.getValidQueuedUserIds(0, -1);
     return Promise.all(
       ids.map(async (userId, index) => ({
         userId,
@@ -178,7 +185,16 @@ export class QueueService {
     const now = Date.now();
     const expired: Array<{ userId: string; reason: 'timeout' }> = [];
 
-    for (const userId of ids) {
+    for (const rawUserId of ids) {
+      const userId = rawUserId?.trim();
+      if (!this.isValidUserId(userId)) {
+        if (userId) {
+          await this.redis.zrem('rps:queue', userId);
+          await this.redis.del(`rps:queue:entry:${userId}`);
+        }
+        continue;
+      }
+
       const key = `rps:queue:entry:${userId}`;
       const entry = await this.redis.hgetall(key);
       const exists = Object.keys(entry).length > 0;
@@ -194,6 +210,10 @@ export class QueueService {
   }
 
   async expireUserQueueEntry(userId: string) {
+    if (!this.isValidUserId(userId)) {
+      return;
+    }
+
     await this.redis.zrem('rps:queue', userId);
     await this.redis.del(`rps:queue:entry:${userId}`);
     await this.redis.set(`rps:user:state:${userId}`, 'idle');
@@ -205,6 +225,10 @@ export class QueueService {
   }
 
   async incrementCCU(userId: string, socketId: string) {
+    if (!this.isValidUserId(userId)) {
+      return;
+    }
+
     const existingSocket = await this.redis.get(`rps:user:socket:${userId}`);
     await this.redis.set(`rps:user:socket:${userId}`, socketId);
     if (!existingSocket) {
@@ -256,14 +280,26 @@ export class QueueService {
   }
 
   async getUserSocketId(userId: string) {
+    if (!this.isValidUserId(userId)) {
+      return null;
+    }
+
     return this.redis.get(`rps:user:socket:${userId}`);
   }
 
   async getUserState(userId: string) {
+    if (!this.isValidUserId(userId)) {
+      return null;
+    }
+
     return this.redis.get(`rps:user:state:${userId}`);
   }
 
   async setUserState(userId: string, state: string) {
+    if (!this.isValidUserId(userId)) {
+      return;
+    }
+
     await this.redis.set(`rps:user:state:${userId}`, state);
   }
 
@@ -303,11 +339,39 @@ export class QueueService {
     const positions = await this.getQueuePositions();
     await Promise.all(
       positions.map(async ({ userId, position }) => {
+        if (!this.isValidUserId(userId)) {
+          return;
+        }
+
         await this.prisma.queueEntry.updateMany({
           where: { userId },
           data: { position },
         });
       }),
     );
+  }
+
+  private async getValidQueuedUserIds(start: number, stop: number) {
+    const ids = await this.redis.zrange('rps:queue', start, stop);
+    const validIds: string[] = [];
+
+    for (const rawUserId of ids) {
+      const userId = rawUserId?.trim();
+      if (!this.isValidUserId(userId)) {
+        if (userId) {
+          await this.redis.zrem('rps:queue', userId);
+          await this.redis.del(`rps:queue:entry:${userId}`);
+        }
+        continue;
+      }
+
+      validIds.push(userId);
+    }
+
+    return validIds;
+  }
+
+  private isValidUserId(userId?: string | null): userId is string {
+    return typeof userId === 'string' && UUID_V4_LIKE_REGEX.test(userId.trim());
   }
 }
