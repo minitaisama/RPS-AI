@@ -1,13 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { MatchState, RoundRecord } from '../common/types/game.types';
+import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class AuditService {
   private readonly logger = new Logger(AuditService.name);
 
-  logRound(match: MatchState, round: RoundRecord) {
-    this.logger.log(
-      JSON.stringify({
+  constructor(private readonly prisma: PrismaService) {}
+
+  async logRound(match: MatchState, round: RoundRecord) {
+    const payload = {
         type: 'round_audit',
         matchId: match.matchId,
         roundNumber: round.roundNumber,
@@ -17,13 +19,20 @@ export class AuditService {
         startedAt: round.startedAt,
         lockedAt: round.lockAt,
         revealedAt: round.revealedAt,
-      }),
-    );
+    };
+    this.logger.log(JSON.stringify(payload));
+
+    await this.prisma.systemAuditLog.create({
+      data: {
+        type: 'round_audit',
+        matchId: match.matchId,
+        details: payload as any,
+      },
+    });
   }
 
-  logMatch(match: MatchState) {
-    this.logger.log(
-      JSON.stringify({
+  async logMatch(match: MatchState) {
+    const payload = {
         type: 'match_audit',
         matchId: match.matchId,
         winnerId: match.winnerId,
@@ -31,7 +40,29 @@ export class AuditService {
         rounds: match.rounds.length,
         startedAt: match.startedAt,
         endedAt: match.endedAt,
-      }),
-    );
+    };
+    this.logger.log(JSON.stringify(payload));
+
+    await this.prisma.systemAuditLog.create({
+      data: {
+        type: 'match_audit',
+        matchId: match.matchId,
+        details: payload as any,
+      },
+    });
+  }
+
+  async getMatchAudit(matchId: string) {
+    return this.prisma.systemAuditLog.findMany({
+      where: { matchId },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
+
+  async getRecentLogs(limit = 50) {
+    return this.prisma.systemAuditLog.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    });
   }
 }

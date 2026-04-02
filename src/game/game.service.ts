@@ -6,6 +6,8 @@ import { QueuePlayerDto } from './dto/queue-player.dto';
 import { StrategyService } from '../strategy/strategy.service';
 import { RedisService } from '../redis/redis.service';
 import { MATCH_DEFAULTS } from '../common/constants/game.constants';
+import { WalletService } from '../wallet/wallet.service';
+import { AuditService } from '../audit/audit.service';
 
 @Injectable()
 export class GameService {
@@ -14,6 +16,8 @@ export class GameService {
     private readonly matchStateMachine: MatchStateMachineService,
     private readonly strategyService: StrategyService,
     private readonly redisService: RedisService,
+    private readonly walletService: WalletService,
+    private readonly auditService: AuditService,
   ) {}
 
   private get redis() {
@@ -25,6 +29,11 @@ export class GameService {
       await this.strategyService.compilePlayerStrategy(players[0].playerId, players[0].strategyId),
       await this.strategyService.compilePlayerStrategy(players[1].playerId, players[1].strategyId),
     ] as const;
+
+    await Promise.all([
+      this.walletService.lockStake(players[0].playerId, '10'),
+      this.walletService.lockStake(players[1].playerId, '10'),
+    ]);
 
     const match = this.matchStateMachine.createMatch(compiledPlayers as any);
     await this.cacheMatchState(match);
@@ -61,6 +70,14 @@ export class GameService {
     }
 
     const updated = this.matchStateMachine.revealRound(match, round);
+    await this.auditService.logRound(updated, round);
+    
+    if (updated.status === 'match_complete' && updated.winnerId) {
+      const loserId = updated.players.find(p => p.id !== updated.winnerId)?.id || '';
+      await this.walletService.settleMatch(updated.winnerId, loserId, '10');
+      await this.auditService.logMatch(updated);
+    }
+    
     await this.cacheMatchState(updated, round);
     return this.matchRepository.save(updated);
   }
@@ -76,6 +93,11 @@ export class GameService {
     match.endedAt = new Date().toISOString();
     match.updatedAt = match.endedAt;
     match.score[winnerId] = Math.max(match.score[winnerId] || 0, MATCH_DEFAULTS.WIN_SCORE);
+    
+    const loserId = match.players.find(p => p.id !== winnerId)?.id || '';
+    await this.walletService.settleMatch(winnerId, loserId, '10');
+    await this.auditService.logMatch(match);
+    
     await this.cacheMatchState(match);
     return this.matchRepository.save(match);
   }
